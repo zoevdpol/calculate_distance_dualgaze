@@ -29,6 +29,7 @@ class Action(enum.IntEnum):
     RUN_VALIDATION = enum.auto()
     EXPORT_TRIALS = enum.auto()
     MAKE_MAPPED_GAZE_VIDEO = enum.auto()
+    COMPUTE_GAZE_DISTANCE = enum.auto()
     @property
     def displayable_name(self):
         return self.name.replace("_", " ").title()
@@ -37,7 +38,7 @@ class Action(enum.IntEnum):
         return self in [Action.CODE_EPISODES, Action.SYNC_ET_TO_CAM]
     @property
     def has_options(self):
-        return self in [Action.MAKE_GAZE_OVERLAY_VIDEO, Action.DETECT_MARKERS, Action.GAZE_TO_PLANE, Action.MAKE_MAPPED_GAZE_VIDEO]
+        return self in [Action.MAKE_GAZE_OVERLAY_VIDEO, Action.DETECT_MARKERS, Action.GAZE_TO_PLANE, Action.MAKE_MAPPED_GAZE_VIDEO, Action.COMPUTE_GAZE_DISTANCE]
     def succ(self):
         v = self.value+1
         if v > Action.MAKE_MAPPED_GAZE_VIDEO.value:
@@ -78,6 +79,7 @@ def action_to_func(action: Action) -> typing.Callable[..., None]:
     from .auto_code_sync_points import run as auto_code_sync_points
     from .auto_code_trials import run as auto_code_trials
     from .make_mapped_gaze_video import run as make_mapped_gaze_video
+    from .compute_gaze_distance import run as compute_gaze_distance
 
     match action:
         case Action.IMPORT:
@@ -104,11 +106,13 @@ def action_to_func(action: Action) -> typing.Callable[..., None]:
             return export_trials
         case Action.MAKE_MAPPED_GAZE_VIDEO:
             return make_mapped_gaze_video
+        case Action.COMPUTE_GAZE_DISTANCE:
+            return compute_gaze_distance
         case _:
             raise NotImplementedError(f'Logic is not implemented for {action.displayable_name} ({action}), major developer oversight! Let him know.')
 
 def is_session_level_action(action: Action) -> bool:
-    return action in [Action.SYNC_TO_REFERENCE, Action.EXPORT_TRIALS, Action.MAKE_MAPPED_GAZE_VIDEO]
+    return action in [Action.SYNC_TO_REFERENCE, Action.EXPORT_TRIALS, Action.MAKE_MAPPED_GAZE_VIDEO, Action.COMPUTE_GAZE_DISTANCE]
 
 def is_action_possible_given_config(action: Action, study_config: 'config.Study') -> bool:
     match action:
@@ -148,6 +152,8 @@ def get_actions_for_config(study_config: 'config.Study', exclude_session_level: 
 
 def _determine_to_invalidate(action: Action, study_config: 'config.Study') -> set[Action]:
     match action:
+        case Action.COMPUTE_GAZE_DISTANCE:
+            return [] 
         case Action.IMPORT:
             return action.next_values()
         case Action.MAKE_GAZE_OVERLAY_VIDEO:
@@ -258,6 +264,12 @@ def _is_session_action_possible(session_action_states: dict[Action, State], reco
             preconditions.update([Action.CODE_EPISODES])
             # NB: even if study_config.auto_code_sync_points is defined, user may decide to code sync manually. So don't add Action.AUTO_CODE_SYNC to preconditions
             # NB: even if study_config.auto_code_trial_episodes is defined, user may decide to code trials manually. So don't add Action.AUTO_CODE_TRIALS to preconditions
+            if study_config.sync_ref_recording:
+                preconditions.add(Action.SYNC_TO_REFERENCE)
+            elif study_config.get_cam_movement_for_et_sync_method in ['plane', 'function']:
+                preconditions.add(Action.SYNC_ET_TO_CAM)
+        case Action.COMPUTE_GAZE_DISTANCE:
+            preconditions.update([Action.CODE_EPISODES, Action.GAZE_TO_PLANE])
             if study_config.sync_ref_recording:
                 preconditions.add(Action.SYNC_TO_REFERENCE)
             elif study_config.get_cam_movement_for_et_sync_method in ['plane', 'function']:

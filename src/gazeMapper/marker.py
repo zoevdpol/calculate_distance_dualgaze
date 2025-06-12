@@ -75,3 +75,4 @@ def fill_gaps_in_marker_detection(markers: pd.DataFrame, fill_value):
     max_fr_idx = markers['frame_idx'].max()
     new_index = pd.Index(range(min_fr_idx,max_fr_idx+1), name='frame_idx')
     return markers.set_index('frame_idx').reindex(new_index, fill_value=fill_value).reset_index()
+

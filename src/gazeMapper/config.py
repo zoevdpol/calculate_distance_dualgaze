@@ -6,11 +6,14 @@ import enum
 import typeguard
 import typing
 from typing import Any, Literal
+import os 
 
 from glassesTools import annotation, gaze_worldref, utils
 from glassesTools.validation import DataQualityType, get_DataQualityType_explanation
 
 from . import marker, plane, session, typed_dict_defaults, type_utils
+from glassesTools.plane import Coordinate
+
 
 
 
@@ -472,36 +475,63 @@ class Study:
         type_utils.merge_problem_dicts(problems, self._check_make_video(False))
         return problems
 
-    def store_as_json(self, path: str|pathlib.Path|None=None):
+    def store_as_json(self, path: str | pathlib.Path | None = None):
         if not path:
             path = guess_config_dir(self.working_directory)
         path = pathlib.Path(path)
-        # this stores only the planes_per_episode variable to json, rest is read from other files
-        # instead to remain flexible and make it easy for users to rename, etc
+
+        # Pad naar study_def.json bepalen
         f_path = path
         if f_path.is_dir():
             f_path /= self.default_json_file_name
         else:
             path = f_path.parent
+
+        # Verzamel attributen die opgeslagen moeten worden
+        to_dump = {
+            k: getattr(self, k)
+            for k in vars(self)
+            if not k.startswith('_') and k not in ['session_def', 'planes', 'working_directory']
+        }
+
+        # Zet planes_per_episode om naar lijst van tuples
+        to_dump['planes_per_episode'] = [(k, to_dump['planes_per_episode'][k]) for k in to_dump['planes_per_episode']]
+
+        # Verwijder standaardwaarden
+        to_dump = {
+            k: to_dump[k]
+            for k in to_dump
+            if k not in study_defaults or study_defaults[k] != to_dump[k]
+        }
+
+        for k in ['auto_code_sync_points', 'auto_code_trial_episodes', 'validate_I2MC_settings']:
+            if k in to_dump:
+                val = to_dump[k]
+                if hasattr(val, '_field_defaults'):
+                    # Alleen filteren als het object een `_field_defaults` attribuut heeft
+                    to_dump[k] = {
+                        kk: val[kk]
+                        for kk in val
+                        if kk not in val._field_defaults or val._field_defaults[kk] != val[kk]
+                    }
+                if not to_dump[k] and k in study_defaults and study_defaults[k] is not None:
+                    to_dump.pop(k)
+
+
+        # Wegschrijven naar JSON bestand met expliciete flush + fsync
         with open(f_path, 'w') as f:
-            to_dump = {k:getattr(self,k) for k in vars(self) if not k.startswith('_') and k not in ['session_def','planes','working_directory']}    # session_def and planes will be populated from contents in the provided folder, and working_directory as the provided path
-            to_dump['planes_per_episode'] = [(k, to_dump['planes_per_episode'][k]) for k in to_dump['planes_per_episode']]   # pack as list of tuples for storage
-            # filter out defaulted
-            to_dump = {k:to_dump[k] for k in to_dump if k not in study_defaults or study_defaults[k]!=to_dump[k]}
-            # also filter out defaults in some subfields
-            for k in ['auto_code_sync_points','auto_code_trial_episodes','validate_I2MC_settings']:
-                if k in to_dump:
-                    to_dump[k] = {kk:to_dump[k][kk] for kk in to_dump[k] if kk not in to_dump[k]._field_defaults or to_dump[k]._field_defaults[kk]!=to_dump[k][kk]}
-                    if not to_dump[k] and k in study_defaults and study_defaults[k] is not None:
-                        to_dump.pop(k)
-            # dump to file
             json.dump(to_dump, f, cls=utils.CustomTypeEncoder, indent=2)
-        # this doesn't store any files itself, but triggers the contained info to be stored
+            f.flush()
+            os.fsync(f.fileno())  # <-- garandeert dat het op schijf staat vóór verdergaan
+
+        # Session_def opslaan
         self.session_def.store_as_json(path)
+
+        # Plane-definities opslaan
         for p in self.planes:
             p_dir = path / p.name
             if not p_dir.is_dir():
-                p_dir.mkdir()
+                p_dir.mkdir(parents=True, exist_ok=True)
             p.store_as_json(p_dir)
 
     @staticmethod
@@ -532,6 +562,8 @@ class Study:
         if not s_path.is_file():
             return None
         sess_def = session.SessionDefinition.load_from_json(s_path)
+        print("DEBUG session_def:", sess_def.recordings)
+
 
         # get planes
         planes: list[plane.Definition] = []
@@ -544,6 +576,114 @@ class Study:
             planes.append(plane.Definition.load_from_json(p_file))
 
         return Study(sess_def, planes, working_directory=path.parent, **kwds, strict_check=strict_check)
+    
+
+
+    def set_dual_gaze_presets(self, config_path: pathlib.Path):
+        study_path = config_path / "study_def.json"
+        session_path = config_path / "session_def.json"
+
+        print(study_path, session_path)
+
+        # Laad bestaande session_def
+        session_def = session.SessionDefinition.load_from_json(session_path)
+        if session_def is None:
+            raise RuntimeError(f"Kon session_def niet laden vanaf {session_path}")
+        
+        # ----------------------
+        # Session recordings
+        # ----------------------
+        session_def.recordings = [
+            session.RecordingDefinition(name="zoe", type=session.RecordingType.Eye_Tracker),
+            session.RecordingDefinition(name="robert-jan", type=session.RecordingType.Eye_Tracker)
+        ]
+
+        # ----------------------
+        # Study instellingen
+        # ----------------------
+        self.session_def = session_def
+        self.sync_ref_recording = "zoe"
+        self.sync_ref_do_time_stretch = False
+        self.get_cam_movement_for_et_sync_method = "plane"
+        self.auto_code_sync_points = {"markers": {81}}
+        self.auto_code_trial_episodes = {
+            "start_markers": [81],
+            "end_markers": [82]
+        }
+
+        self.episodes_to_code = {
+            annotation.Event.Trial,
+            annotation.Event.Sync_ET_Data,
+            annotation.Event.Validate,
+            annotation.Event.Sync_Camera
+        }
+
+        self.individual_markers = [
+            marker.Marker(id=81, size=0.0),
+            marker.Marker(id=82, size=0.0)
+        ]
+
+        self.planes_per_episode = {
+            annotation.Event.Trial: set(["monitor"]),
+            annotation.Event.Sync_ET_Data: set(["validationposter"]),
+            annotation.Event.Validate: set(["validationposter"])
+        }
+
+
+
+        self.video_recording_colors = {
+            "zoe": RgbColor(r=0, g=95, b=0),
+            "robert-jan": RgbColor(r=255, g=127, b=0)
+        }
+        self.video_make_which = {"zoe", "robert-jan"}
+        self.video_show_gaze_on_plane_in_which = {"zoe", "robert-jan"}
+        self.video_show_gaze_vec_in_which = {"zoe", "robert-jan"}
+        self.video_show_camera_in_which = {"zoe", "robert-jan"}
+        self.video_which_gaze_type_on_plane = gaze_worldref.Type.Average_Gaze_Vector
+
+        # ----------------------
+        # Planes toevoegen (indien nog niet)
+        # ----------------------
+        existing_plane_names = {p.name for p in self.planes}
+
+        if "monitor" not in existing_plane_names:
+            self.planes.append(plane.Definition_Plane_2D(
+                name="monitor",
+                marker_file="markerPositions_screen.csv",
+                marker_size=41.25,
+                plane_size=plane.Coordinate(528.0, 296.0),
+                origin=plane.Coordinate(0.0, 0.0),
+                unit="mm"
+            ))
+
+        if "validationposter" not in existing_plane_names:
+            self.planes.append(plane.Definition_Plane_2D(
+                name="validationposter",
+                marker_file="markerPositions_validation.csv",
+                marker_size=47.0,
+                plane_size=plane.Coordinate(600.0, 850.0),
+                origin=plane.Coordinate(0.0, 0.0),
+                unit="mm"
+            ))
+
+        # ----------------------
+        # Opslaan
+        # ----------------------
+            
+        # Zorg dat planes_per_episode correct wordt geprepareerd voor opslag
+        self.planes_per_episode = {
+            k: set(v) if not isinstance(v, set) else v
+            for k, v in self.planes_per_episode.items()
+        }
+
+        self.store_as_json(study_path)
+        session_def.store_as_json(session_path)
+        print(">>> Dual gaze presets opgeslagen.")
+
+        return self, session_def
+
+
+
 
 # get defaults for default argument of Study constructor
 _params = inspect.signature(Study.__init__).parameters

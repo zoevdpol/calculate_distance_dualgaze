@@ -11,6 +11,8 @@ from imgui_bundle import imgui, imspinner, hello_imgui, icons_fontawesome_6 as i
 from glassesTools import annotation, aruco, async_thread, camera_recording, eyetracker, gui as gt_gui, naming as gt_naming, platform, recording, video_utils
 from glassesTools.validation import config as val_config, DataQualityType, export, get_DataQualityType_explanation
 
+
+
 from . import colors, utils
 from ... import config, marker, naming, plane, process, session
 
@@ -18,6 +20,7 @@ def get_folder_picker(g, reason: str, *args, **kwargs):
     from . import gui
     g = typing.cast(gui.GUI,g)  # indicate type to typechecker
     def select_callback(selected: list[pathlib.Path]):
+        print(">>> folder_picker invoked with reason:", reason)
         match reason:
             case 'loading' | 'creating':
                 try_load_project(g, selected, action=reason)
@@ -33,11 +36,25 @@ def get_folder_picker(g, reason: str, *args, **kwargs):
                 aruco.deploy_marker_images(selected[0], 1000, *args, **kwargs)
             case 'export':
                 show_export_config(g, selected[0], *args, **kwargs)
+            case 'creating_dual_gaze':
+                # NIEUW: maak dual gaze template, laad het project
+                try:
+                    create_dual_gaze_template(selected[0])
+                    try_load_project(g, selected, action='creating')
+                except Exception as e:
+                    gt_gui.utils.push_popup(
+                        g,
+                        gt_gui.msg_box.msgbox,
+                        "Error creating Dual Gaze project",
+                        str(e),
+                        gt_gui.msg_box.MsgBox.error
+                    )
             case _:
                 raise ValueError(f'reason "{reason}" not understood')
+            
 
     match reason:
-        case 'loading' | 'creating':
+        case 'loading' | 'creating' | 'creating_dual_gaze':
             header = "Select or drop project folder"
             allow_multiple = False
             picker_type = gt_gui.file_picker.DirPicker
@@ -909,3 +926,30 @@ def add_recordings(g, paths: list[pathlib.Path], sessions: list[str]):
 
     # ask what type of device recordings we want to import
     gt_gui.utils.push_popup(g, lambda: gt_gui.utils.popup("Select device", choose_dev_popup, buttons = buttons, closable=True, outside=False))
+
+
+def create_dual_gaze_template(dest: pathlib.Path):
+    """
+    Kopieert de Dual Gaze template en initialiseert de project folder correct.
+    """
+    # 1. Bepaal template-locatie
+    tmpl_dir = pathlib.Path(r'C:\Users\zoevd\gazeMapper - auto\dualgazetemplate')
+    print(tmpl_dir)
+    if not tmpl_dir.is_dir():
+        raise FileNotFoundError(f"Dual gaze template niet gevonden in {tmpl_dir}")
+
+    # 2. Kopieer template bestanden
+    shutil.copytree(
+        src=tmpl_dir,
+        dst=dest,
+        dirs_exist_ok=True
+    )
+    print(f"Dual gaze template gekopieerd naar {dest}")
+
+    # 3. Initialiseer als projectfolder
+    utils.init_project_folder(dest)
+    
+    # 4. Voeg een marker toe om aan te geven dat dit een Dual Gaze project is
+    (dest / ".dual_gaze").touch()
+
+    print("Dual gaze project folder geïnitialiseerd.")

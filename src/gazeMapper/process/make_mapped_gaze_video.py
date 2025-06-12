@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 import copy
 import subprocess
+import pandas as pd
 
 from glassesTools import annotation, aruco, drawing, intervals, gaze_headref, gaze_worldref, naming as gt_naming, ocv, plane, propagating_thread, timestamps, transforms, utils
 from glassesTools.gui.video_player import GUI
@@ -51,6 +52,38 @@ def do_the_work(working_dir: pathlib.Path, config_dir: pathlib.Path, gui: GUI, *
     # get session info
     session_info = session.Session.from_definition(study_config.session_def, working_dir)
 
+    rec_a, rec_b = list(session_info.recordings)[:2]
+    trial_planes = study_config.planes_per_episode.get(annotation.Event.Trial, [])
+    plane = list(trial_planes)[0] if trial_planes else "monitor"
+
+
+
+    # 📄 Laad merged distance TSV
+    merged_tsv_path = working_dir / f"{rec_a}_vs_{rec_b}_{plane}_merged_distance.tsv"
+    if merged_tsv_path.exists():
+        merged_df = pd.read_csv(merged_tsv_path, sep="\t")
+        print(f"📊 Kolommen in merged TSV: {list(merged_df.columns)}")
+        print("🔍 Eerste rijen uit merged TSV:")
+        print(merged_df.head(10))
+
+        # Maak dictionary met timestamp -> afstand
+        distances_by_time = {
+            round(row["timestamp_VOR_a"], 3): f"{row['gaze_distance_mm']:.1f} mm"
+            for _, row in merged_df.iterrows()
+            if not pd.isna(row["timestamp_VOR_a"]) and not pd.isna(row["gaze_distance_mm"])
+        }
+    else:
+        print(f"⚠️ Merged distance file niet gevonden op pad: {merged_tsv_path}")
+        distances_by_time = {}
+
+    # DEBUG: Laat de eerste keys in de afstandsdata zien
+    print("🔍 Eerste 10 timestamps met afstand uit merged TSV:")
+    print(distances_by_time.keys())
+    print("🔍 Eerste 10 frame timestamps in video:")
+    
+
+
+
     # load info for all recordings in the recording session and setup wanted output videos
     episodes        : dict[str, dict[annotation.Event, list[list[int]]]]            = {}
     episodes_as_ref : dict[str, dict[annotation.Event, list[list[int]]]]            = {}
@@ -91,6 +124,7 @@ def do_the_work(working_dir: pathlib.Path, config_dir: pathlib.Path, gui: GUI, *
         # get frame timestamps
         videos_ts[rec] = timestamps.VideoTimestamps(rec_working_dir / gt_naming.frame_timestamps_fname)
 
+    
     # get frame sync info, and recording's episodes expressed in the reference video's frame indices
     if study_config.sync_ref_recording:
         sync = synchronization.get_sync_for_recs(working_dir, [r for r in recs if r!=study_config.sync_ref_recording], study_config.sync_ref_recording, study_config.sync_ref_do_time_stretch, study_config.sync_ref_average_recordings)
@@ -290,6 +324,8 @@ def do_the_work(working_dir: pathlib.Path, config_dir: pathlib.Path, gui: GUI, *
         # update state: set to not run so that if we crash or cancel below the task is correctly marked as not run (video files are corrupt)
         session.update_action_states(working_dir, process.Action.MAKE_MAPPED_GAZE_VIDEO, process.State.Not_Run, study_config)
 
+        print([round(ts, 3) for ts in list(videos_ts[lead_vid].timestamps)[:10]])
+
         # now make the video
         def n_digit(value):
             return int(math.log10(value))+1
@@ -299,6 +335,15 @@ def do_the_work(working_dir: pathlib.Path, config_dir: pathlib.Path, gui: GUI, *
         timestamp_width |= {v: n_digit_timestamp(videos_ts[v].get_timestamp(max(ref_frame_idxs[v]))) for v in other_vids}
         frame_idx_width = {lead_vid: n_digit(videos_ts[lead_vid].get_last()[0])}
         frame_idx_width |= {v: n_digit(max(ref_frame_idxs[v])) for v in other_vids}
+
+        print(f"🔍 Video timestamp range: {min(videos_ts[rec_a].timestamps)} - {max(videos_ts[rec_a].timestamps)}")
+        print(f"🔍 Distance timestamp range: {min(distances_by_time.keys())} - {max(distances_by_time.keys())}")
+
+        distance_lookup = dict()
+        for _, row in merged_df.iterrows():
+            key = round(row["timestamp_a"], 3)
+            distance_lookup[key] = row["gaze_distance_mm"]
+
         while True:
             status, pose[lead_vid], _, _, (frame[lead_vid], frame_idx[lead_vid], frame_ts[lead_vid]) = \
                 pose_estimators[lead_vid].process_one_frame()
@@ -328,13 +373,32 @@ def do_the_work(working_dir: pathlib.Path, config_dir: pathlib.Path, gui: GUI, *
                     # we don't have a valid frame, use a fully black frame
                     frame[v] = np.zeros((vid_info[v][1],vid_info[v][0],3), np.uint8)   # black image
 
-            # draw gaze on the video
             for v in proc_vids:
                 if v in gazes_head and frame_idx[lead_vid] in gazes_head[v]:
                     clr = study_config.video_recording_colors[v][::-1]  # RGB -> BGR
-                    for g in gazes_head[v][frame_idx[lead_vid]]:
-                        if v in all_vids:
-                            g.draw(frame[v], sub_pixel_fac=sub_pixel_fac, clr=clr, draw_3d_gaze_point=False)
+                    gaze_list = gazes_head[v][frame_idx[lead_vid]]
+
+                    if gaze_list:
+                        # Bereken gemiddelde van geldige gaze_pos_vid punten
+                        valid_gazes = [g for g in gaze_list if g.gaze_pos_vid is not None]
+                        xs = [g.gaze_pos_vid[0] for g in valid_gazes]
+                        ys = [g.gaze_pos_vid[1] for g in valid_gazes]
+
+                        if xs and ys:
+                            avg_x = sum(xs) / len(xs)
+                            avg_y = sum(ys) / len(ys)
+
+                            # Maak een nieuwe Gaze-kopie of hergebruik eerste object
+                            g = valid_gazes[0]
+                            g.gaze_pos_vid = [avg_x, avg_y]
+
+                            if v in all_vids:
+                                # Teken alleen de gemiddelde gaze
+                                g.draw(frame[v], sub_pixel_fac=sub_pixel_fac, clr=clr, draw_3d_gaze_point=False)
+
+
+
+
 
                         # check if we need gaze on plane for drawing on any of the videos
                         plane_gaze_on_this_video = not not study_config.video_show_gaze_on_plane_in_which and v in study_config.video_show_gaze_on_plane_in_which
@@ -357,8 +421,8 @@ def do_the_work(working_dir: pathlib.Path, config_dir: pathlib.Path, gui: GUI, *
                             continue
 
                         # draw on current video
-                        if v in study_config.video_show_gaze_on_plane_in_which:
-                            plane_gazes[best[0]][2].draw_on_world_video(frame[v], camera_params[v], sub_pixel_fac, pose[v][best[0]], study_config.video_projected_vidPos_color, study_config.video_projected_world_pos_color, study_config.video_projected_left_ray_color, study_config.video_projected_right_ray_color, study_config.video_projected_average_ray_color)
+                        # if v in study_config.video_show_gaze_on_plane_in_which:
+                        #     plane_gazes[best[0]][2].draw_on_world_video(frame[v], camera_params[v], sub_pixel_fac, pose[v][best[0]], study_config.video_projected_vidPos_color, study_config.video_projected_world_pos_color, study_config.video_projected_left_ray_color, study_config.video_projected_right_ray_color, study_config.video_projected_average_ray_color)
 
                         # also draw on other recordings, if so configured
                         # depending on configuration also includes camera and gaze vector between the two
@@ -421,6 +485,32 @@ def do_the_work(working_dir: pathlib.Path, config_dir: pathlib.Path, gui: GUI, *
                     cv2.rectangle(frame[v],(x_end,frame[v].shape[0]),(x_end+x_advance,frame[v].shape[0]-max_height-b-margin), f, -1)
                     cv2.putText(frame[v], (t), (x_end+margin, frame[v].shape[0]-margin), cv2.FONT_HERSHEY_PLAIN, 2, (0,255,255), 2)
                     x_end += x_advance
+
+
+            key = frame_ts[lead_vid]
+            tolerance = 10  # in ms
+
+            # Vind alle keys in de buurt (max ±10 ms verschil)
+            nearby_keys = [k for k in distances_by_time if abs(k - key) <= tolerance]
+
+            if nearby_keys:
+                closest_key = min(nearby_keys, key=lambda x: abs(x - key))
+                distance_text = distances_by_time[closest_key]
+                print(f"✅ Match gevonden voor timestamp {key:.3f} ms → dichtstbijzijnde: {closest_key:.3f} ms → afstand: {distance_text}")
+            else:
+                distance_text = "– mm"
+                print(f"ℹ️ Geen afstand beschikbaar binnen ±{tolerance} ms voor timestamp {key:.3f} ms")
+
+
+            # 📐 Voeg distance rechtsboven toe
+            font_scale = 1.5
+            font = cv2.FONT_HERSHEY_PLAIN
+            font_thickness = 2
+            text_size, _ = cv2.getTextSize(distance_text, font, font_scale, font_thickness)
+            x, y = frame[lead_vid].shape[1] - text_size[0] - 10, text_size[1] + 10
+            cv2.rectangle(frame[lead_vid], (x - 5, y - text_size[1] - 5), (x + text_size[0] + 5, y + 5), (0, 0, 0), -1)
+            cv2.putText(frame[lead_vid], distance_text, (x, y), font, font_scale, (0, 255, 255), font_thickness)
+
 
             # submit frame to be encoded
             for v in write_vids:

@@ -78,6 +78,12 @@ class GUI:
         self._marker_preview_cache  : dict[tuple[int,int,int], image_helper.ImageHelper]= {}
         self._plane_preview_cache   : dict[str               , image_helper.ImageHelper]= {}
 
+        self._auto_codes_running = False
+        self._auto_codes_done = False
+        self._post_coding_running = False
+        self._post_coding_done = False
+
+
         # Show errors in threads
         def asyncexcepthook(future: asyncio.Future):
             try:
@@ -481,37 +487,81 @@ class GUI:
             sess.load_action_states(False, False)
 
     def load_project(self, path: pathlib.Path):
+        print(f">>> load_project gestart voor: {path}")
         self.project_dir = path
         try:
             config_dir = config.guess_config_dir(self.project_dir)
+            print(f">>> Config directory gedetecteerd: {config_dir}")
+            
             self.study_config = config.Study.load_from_json(config_dir, strict_check=False)
+            print(f">>> study_config geladen: {self.study_config}")
+
+            # === Check of het een dual gaze project is ===
+            dual_gaze_flag = self.project_dir / ".dual_gaze"
+            print(f">>> Zoeken naar dual gaze flag op: {dual_gaze_flag}")
+            if dual_gaze_flag.exists():
+                print(">>> Dual Gaze project gedetecteerd.")
+                try:
+                    # study_config is een Study instantie
+                    study_def, session_def = self.study_config.set_dual_gaze_presets(config_dir)
+                    self.study_config = study_def
+                    self.study_config.session_def = session_def
+                    self.study_config.store_as_json()
+                    print(">>> Dual Gaze presets toegepast en opgeslagen.")
+                except Exception as e:
+                    print(f">>> Fout bij toepassen dual gaze presets: {e}")
+
             self._reload_sessions()
+            print(">>> Sessions herladen.")
+
             self.process_pool.set_num_workers(self.study_config.gui_num_workers)
+            print(f">>> Aantal GUI workers ingesteld op {self.study_config.gui_num_workers}")
+
         except Exception as e:
-            gt_gui.utils.push_popup(self, gt_gui.msg_box.msgbox, "Project loading error", f"Failed to load the project at {self.project_dir}:\n{e}\n\n{gt_gui.utils.get_traceback(e)}", gt_gui.msg_box.MsgBox.error)
+            print(f">>> FOUT bij het laden van het project: {e}")
+            gt_gui.utils.push_popup(
+                self,
+                gt_gui.msg_box.msgbox,
+                "Project loading error",
+                f"Failed to load the project at {self.project_dir}:\n{e}\n\n{gt_gui.utils.get_traceback(e)}",
+                gt_gui.msg_box.MsgBox.error
+            )
             self.close_project()
             return
 
         self.config_watcher_stop_event = asyncio.Event()
-        self.config_watcher = async_thread.run(project_watcher.watch_and_report_changes(self.project_dir, self._config_change_callback, self.config_watcher_stop_event, watch_filter=project_watcher.ProjectFilter(('.gazeMapper',), True, {config_dir}, True, True)))
+        self.config_watcher = async_thread.run(project_watcher.watch_and_report_changes(
+            self.project_dir,
+            self._config_change_callback,
+            self.config_watcher_stop_event,
+            watch_filter=project_watcher.ProjectFilter(('.gazeMapper',), True, {config_dir}, True, True)
+        ))
+        print(">>> Config watcher gestart.")
 
-        def _get_known_recordings(filter_ref=False, dev_types:list[session.RecordingType]|None=None) -> set[str]:
+        # --- Value getters ---
+        def _get_known_recordings(filter_ref=False, dev_types: list[session.RecordingType] | None = None) -> set[str]:
             recs = {r.name for r in self.study_config.session_def.recordings}
             if filter_ref and self.study_config.sync_ref_recording:
-                recs = {r for r in recs if r!=self.study_config.sync_ref_recording}
+                recs = {r for r in recs if r != self.study_config.sync_ref_recording}
             if dev_types:
                 recs = {r for r in recs if self.study_config.session_def.get_recording_def(r).type in dev_types}
             return recs
+
         def _get_known_recordings_no_ref() -> set[str]:
             return _get_known_recordings(filter_ref=True)
+
         def _get_known_recordings_only_eye_tracker() -> set[str]:
             return _get_known_recordings(dev_types=[session.RecordingType.Eye_Tracker])
+
         def _get_known_individual_markers() -> set[str]:
             return {m.id for m in self.study_config.individual_markers}
+
         def _get_known_planes() -> set[str]:
             return {p.name for p in self.study_config.planes}
+
         def _get_episodes_to_code_for_planes() -> set[annotation.Event]:
-            return {e for e in self.study_config.episodes_to_code if e!=annotation.Event.Sync_Camera}
+            return {e for e in self.study_config.episodes_to_code if e != annotation.Event.Sync_Camera}
+
         self._possible_value_getters = {
             'video_make_which': _get_known_recordings,
             'video_recording_colors': _get_known_recordings_only_eye_tracker,
@@ -522,15 +572,21 @@ class GUI:
             'sync_ref_average_recordings': _get_known_recordings_no_ref,
             'planes_per_episode': [_get_episodes_to_code_for_planes, _get_known_planes],
             'auto_code_sync_points': {'markers': _get_known_individual_markers},
-            'auto_code_trial_episodes': {'start_markers': _get_known_individual_markers, 'end_markers': _get_known_individual_markers}
+            'auto_code_trial_episodes': {
+                'start_markers': _get_known_individual_markers,
+                'end_markers': _get_known_individual_markers
+            }
         }
 
         self._need_set_window_title = True
         self._project_settings_pane.is_visible = True
         self._action_list_pane.is_visible = True
-        # trigger update so visibility change is honored
         self._window_list = [self._sessions_pane, self._project_settings_pane, self._action_list_pane]
-        self._to_focus = self._sessions_pane.label  # ensure sessions pane remains focused
+        self._to_focus = self._sessions_pane.label
+
+        print(">>> Project volledig geladen en GUI ingesteld.")
+
+
 
     def _reload_sessions(self):
         sessions = session.get_sessions_from_project_directory(self.project_dir, self.study_config.session_def)
@@ -682,9 +738,6 @@ class GUI:
 
     def _sessions_pane_drawer(self):
         if not self._main_dock_node_id:
-            # this window is docked to the right dock node, if we don't
-            # have it yet, query id of this dock node as we'll need it for later
-            # windows
             self._main_dock_node_id = imgui.get_window_dock_id()
         if not self.project_dir:
             self._unopened_interface_drawer()
@@ -703,20 +756,103 @@ class GUI:
         if imgui.button('+ new session'):
             callbacks.new_session_button(self)
         imgui.same_line()
-        if imgui.button(ifa6.ICON_FA_FILE_IMPORT+' import eye tracker recordings'):
-            gt_gui.utils.push_popup(self, callbacks.get_folder_picker(self, reason='add_et_recordings', sessions=[s for s in self._selected_sessions if self._selected_sessions[s] and self.sessions[s].missing_recordings(session.RecordingType.Eye_Tracker)]))
-        if any((r.type==session.RecordingType.Camera for r in self.study_config.session_def.recordings)):
+
+        # 🔄 Auto Codes knop
+        if imgui.button(ifa6.ICON_FA_PLAY + ' Run Auto Codes'):
+            import gazeMapper.process.pipeline as dual_pipeline
+            try:
+                self._auto_codes_running = True
+                self._auto_codes_done = False
+
+                recording_names = [r.name for r in self.study_config.session_def.recordings]
+                session_dirs = [d for d in self.project_dir.iterdir() if d.is_dir() and all((d / r).exists() for r in recording_names)]
+                working_dir = session_dirs[0] if len(session_dirs) == 1 else self.project_dir
+                self.study_config.working_directory = working_dir
+
+                dual_pipeline.run_auto_codes_pipeline(working_dir, self.study_config)
+
+                self._auto_codes_running = False
+                self._auto_codes_done = True
+                print("✅ Auto Codes pipeline voltooid.")
+            except Exception as e:
+                self._auto_codes_running = False
+                self._auto_codes_done = False
+                print(f"❌ Fout tijdens Auto Codes pipeline: {e}")
+                gt_gui.utils.push_popup(self, gt_gui.msg_box.msgbox, "Pipeline Error", str(e), gt_gui.msg_box.MsgBox.error)
+
+        imgui.same_line()
+
+        # 📈 Post-Coding knop
+        if imgui.button(ifa6.ICON_FA_FORWARD + ' Run Post-Coding'):
+            import gazeMapper.process.pipeline as dual_pipeline
+            try:
+                self._post_coding_running = True
+                self._post_coding_done = False
+
+                recording_names = [r.name for r in self.study_config.session_def.recordings]
+                session_dirs = [d for d in self.project_dir.iterdir() if d.is_dir() and all((d / r).exists() for r in recording_names)]
+                working_dir = session_dirs[0] if len(session_dirs) == 1 else self.project_dir
+                self.study_config.working_directory = working_dir
+
+                dual_pipeline.run_post_coding_pipeline(working_dir, self.study_config)
+
+                self._post_coding_running = False
+                self._post_coding_done = True
+                print("✅ Post-Coding pipeline voltooid.")
+            except Exception as e:
+                self._post_coding_running = False
+                self._post_coding_done = False
+                print(f"❌ Fout tijdens Post-Coding pipeline: {e}")
+                gt_gui.utils.push_popup(self, gt_gui.msg_box.msgbox, "Pipeline Error", str(e), gt_gui.msg_box.MsgBox.error)
+
+        # ➕ import buttons
+        if imgui.button(ifa6.ICON_FA_FILE_IMPORT + ' import eye tracker recordings'):
+            gt_gui.utils.push_popup(
+                self,
+                callbacks.get_folder_picker(
+                    self,
+                    reason='add_et_recordings',
+                    sessions=[s for s in self._selected_sessions if self._selected_sessions[s] and self.sessions[s].missing_recordings(session.RecordingType.Eye_Tracker)]
+                )
+            )
+        if any((r.type == session.RecordingType.Camera for r in self.study_config.session_def.recordings)):
             imgui.same_line()
-            if imgui.button(ifa6.ICON_FA_FILE_IMPORT+' import camera recordings'):
-                gt_gui.utils.push_popup(self, callbacks.get_folder_picker(self, reason='add_cam_recordings', sessions=[s for s in self._selected_sessions if self._selected_sessions[s] and self.sessions[s].missing_recordings(session.RecordingType.Camera)]))
+            if imgui.button(ifa6.ICON_FA_FILE_IMPORT + ' import camera recordings'):
+                gt_gui.utils.push_popup(
+                    self,
+                    callbacks.get_folder_picker(
+                        self,
+                        reason='add_cam_recordings',
+                        sessions=[s for s in self._selected_sessions if self._selected_sessions[s] and self.sessions[s].missing_recordings(session.RecordingType.Camera)]
+                    )
+                )
+
         self._session_lister.draw()
+
+        # 🧭 Laat live status van pipeline zien per stap (alleen als geselecteerd en sessie bestaat)
+        selected_sessions = [s for s in self._selected_sessions if self._selected_sessions[s]]
+        if selected_sessions:
+            sess_name = selected_sessions[0]
+            session_obj = self.sessions.get(sess_name, None)
+            if session_obj:
+                imgui.separator()
+                imgui.text(f"Pipeline status voor sessie: {sess_name}")
+                for a in [process.Action.DETECT_MARKERS, process.Action.AUTO_CODE_SYNC, process.Action.AUTO_CODE_TRIALS,
+                        process.Action.SYNC_TO_REFERENCE, process.Action.GAZE_TO_PLANE,
+                        process.Action.RUN_VALIDATION, process.Action.COMPUTE_GAZE_DISTANCE,
+                        process.Action.MAKE_MAPPED_GAZE_VIDEO]:
+                    imgui.text(f"{a.displayable_name}: ")
+                    imgui.same_line()
+                    self._session_action_status(session_obj, a)
+
+
 
     def _unopened_interface_drawer(self):
         avail      = imgui.get_content_region_avail()
         but_width  = 200*hello_imgui.dpi_window_size_factor()
         but_height = 100*hello_imgui.dpi_window_size_factor()
 
-        but_x = (avail.x - 2*but_width - 10*imgui.get_style().item_spacing.x) / 2
+        but_x = (avail.x - 3*but_width - 20*imgui.get_style().item_spacing.x) / 2
         but_y = (avail.y - but_height) / 2
 
         imgui.push_font(self._big_font)
@@ -726,12 +862,26 @@ class GUI:
         imgui.text(text)
         imgui.pop_font()
 
+        # Knop: nieuw leeg project
         imgui.set_cursor_pos((but_x, but_y))
         if imgui.button(ifa6.ICON_FA_FOLDER_PLUS+" New project", size=(but_width, but_height)):
             gt_gui.utils.push_popup(self, callbacks.get_folder_picker(self, reason='creating'))
+
         imgui.same_line(spacing=10*imgui.get_style().item_spacing.x)
+
+        # Knop: nieuw Dual Gaze‑template project
+        imgui.set_cursor_pos((but_x + but_width + 10*imgui.get_style().item_spacing.x, but_y))
+        if imgui.button(ifa6.ICON_FA_USERS + " New Dual Gaze project", size=(but_width, but_height)):
+            gt_gui.utils.push_popup(self, callbacks.get_folder_picker(self, reason='creating_dual_gaze'))
+
+        imgui.same_line(spacing=10*imgui.get_style().item_spacing.x)
+
+        # Knop: open bestaand project
+        imgui.set_cursor_pos((but_x + 2*(but_width + 10*imgui.get_style().item_spacing.x), but_y))
         if imgui.button(ifa6.ICON_FA_FOLDER_OPEN+" Open project", size=(but_width, but_height)):
             gt_gui.utils.push_popup(self, callbacks.get_folder_picker(self, reason='loading'))
+
+            
 
     def _project_settings_pane_drawer(self):
         def _indicate_needs_attention():
@@ -774,6 +924,71 @@ class GUI:
                 self._window_list.append(new_win)
                 self._to_dock.append(new_win_params[0])
             self._to_focus = new_win_params[0]
+
+
+
+        # rest of settings handled here in a settings tree
+        if any((k not in ['session_def', 'episodes_to_code', 'planes_per_episode'] for k in self._problems_cache)):
+            imgui.text_colored(colors.error,'*There are problems in the below setup that need to be resolved')
+
+        fields = [k for k in config.study_parameter_types.keys() if k in config.study_defaults]
+        changed, new_config = settings_editor.draw(copy.deepcopy(self.study_config), fields, config.study_parameter_types, config.study_defaults, self._possible_value_getters, None, self._problems_cache, config.study_parameter_doc)
+        if changed:
+            try:
+                new_config.check_valid(strict_check=False)
+            except Exception as e:
+                # do not persist invalid config, inform user of problem
+                gt_gui.utils.push_popup(self, gt_gui.msg_box.msgbox, "Settings error", f"You cannot make this change to the project's settings:\n{e}", gt_gui.msg_box.MsgBox.error)
+            else:
+                # persist changed config
+                self.study_config = new_config
+                self.study_config.store_as_json()
+                self._update_shown_actions_for_config()
+                self.process_pool.set_num_workers(self.study_config.gui_num_workers)
+
+    def _project_settings_pane_drawer(self):
+        def _indicate_needs_attention():
+            imgui.push_style_color(imgui.Col_.button,         colors.error_dark)
+            imgui.push_style_color(imgui.Col_.button_hovered, colors.error)
+            imgui.push_style_color(imgui.Col_.button_active,  colors.error_bright)
+        # options handled in separate panes
+        new_win_params: tuple[str,Callable[[],None]] = None
+        if self.need_setup_recordings:
+            _indicate_needs_attention()
+        if imgui.button("Edit session definition"):
+            new_win_params = ('Session definition', self._session_definition_pane_drawer)
+        if self.need_setup_recordings:
+            imgui.pop_style_color(3)
+        imgui.same_line()
+
+        if self.need_setup_plane:
+            _indicate_needs_attention()
+        if imgui.button("Edit planes"):
+            new_win_params = ('Plane editor', self._plane_editor_pane_drawer)
+        if self.need_setup_plane:
+            imgui.pop_style_color(3)
+        imgui.same_line()
+
+        if self.need_setup_episode:
+            _indicate_needs_attention()
+        if imgui.button("Episode setup"):
+            new_win_params = ('Episode setup', self._episode_setup_pane_drawer)
+        if self.need_setup_episode:
+            imgui.pop_style_color(3)
+        imgui.same_line()
+
+        if imgui.button("Edit individual markers"):
+            new_win_params = ('Individual marker editor', self._individual_marker_setup_pane_drawer)
+        if new_win_params is not None:
+            if not any((w.label==new_win_params[0] for w in hello_imgui.get_runner_params().docking_params.dockable_windows)):
+                new_win = self._make_main_space_window(*new_win_params, can_be_closed=True)
+                if not self._window_list:
+                    self._window_list = hello_imgui.get_runner_params().docking_params.dockable_windows
+                self._window_list.append(new_win)
+                self._to_dock.append(new_win_params[0])
+            self._to_focus = new_win_params[0]
+        
+        
 
         # rest of settings handled here in a settings tree
         if any((k not in ['session_def', 'episodes_to_code', 'planes_per_episode'] for k in self._problems_cache)):

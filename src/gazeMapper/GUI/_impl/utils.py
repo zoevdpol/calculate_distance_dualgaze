@@ -2,6 +2,8 @@ import pathlib
 import typing
 import numpy as np
 import cv2
+import json
+import pathlib
 
 from . import image_helper
 from ... import config, process, session
@@ -42,3 +44,4 @@ class JobInfo(typing.NamedTuple):
     action:     process.Action
     session:    str
     recording:  typing.Optional[str] = None
+

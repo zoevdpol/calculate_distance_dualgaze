@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 from typing import Any, Callable
 
+
 from glassesTools import annotation, aruco, drawing, marker as gt_marker, naming as gt_naming, plane as gt_plane, propagating_thread, timestamps
 from glassesTools.gui.video_player import GUI
 
@@ -34,67 +35,113 @@ def run(working_dir: str|pathlib.Path, config_dir: str|pathlib.Path = None, show
         proc_thread.join()
     else:
         do_the_work(working_dir, config_dir, None, False, **study_settings)
+    
+    study_config = config.read_study_config_with_overrides(config_dir, {
+        config.OverrideLevel.Session: working_dir.parent,
+        config.OverrideLevel.Recording: working_dir
+    }, **study_settings)
+    session.update_action_states(working_dir, process.Action.DETECT_MARKERS, process.State.Completed, study_config)
 
 
 def do_the_work(working_dir: pathlib.Path, config_dir: pathlib.Path, gui: GUI, visualization_show_rejected_markers: bool, **study_settings):
-    # get settings for the study
-    study_config = config.read_study_config_with_overrides(config_dir, {config.OverrideLevel.Session: working_dir.parent, config.OverrideLevel.Recording: working_dir}, **study_settings)
+    print(f"🛠️ Start Detect Markers: {working_dir.name}")
 
-    # get info about recording
+    study_config = config.read_study_config_with_overrides(config_dir, {
+        config.OverrideLevel.Session: working_dir.parent,
+        config.OverrideLevel.Recording: working_dir
+    }, **study_settings)
+
     rec_def = study_config.session_def.get_recording_def(working_dir.name)
     in_video = session.read_recording_info(working_dir, rec_def.type)[1]
+    print(f"🎥 Video path: {in_video}")
 
-    # get interval(s) coded to be analyzed, if any
-    # We don't need them if they would be ignored because the whole video would be processed. The whole video is processed when study_config.auto_code_sync_points or study_config.auto_code_trial_episodes are set
-    has_auto_code = not not study_config.auto_code_sync_points or not not study_config.auto_code_trial_episodes
+    has_auto_code = bool(study_config.auto_code_sync_points or study_config.auto_code_trial_episodes)
     episode_file = working_dir / naming.coding_file
+    print(f"📄 Coding file: {episode_file}")
+
     if episode_file.is_file():
         episodes = episode.list_to_marker_dict(episode.read_list_from_file(episode_file), study_config.episodes_to_code)
+        print(f"✅ Loaded episodes: {[k.name for k in episodes]}")
     else:
-        if not has_auto_code:   # missing coding is ok when auto coding is set up, as then we process all frames anyway
-            raise RuntimeError(f'Coding is missing, cannot run Detect Markers\n{episode_file}')
+        if not has_auto_code:
+            raise RuntimeError(f"❌ Coding is missing, cannot run Detect Markers\n{episode_file}")
         episodes = episode.get_empty_marker_dict(list(study_config.episodes_to_code))
+        print(f"⚠️ No coding file found, using empty marker dict")
 
-    # trial episodes are gotten from the reference recording if there is one and this is not the reference recording
-    if study_config.sync_ref_recording and rec_def.name!=study_config.sync_ref_recording:
-        if annotation.Event.Trial in episodes and episodes[annotation.Event.Trial]:
-            raise ValueError(f'Trial episodes are gotten from the reference recording ({study_config.sync_ref_recording}) and should not be coded for this recording ({rec_def.name})')
-        if annotation.Event.Trial in study_config.episodes_to_code:
-            all_recs = [r.name for r in study_config.session_def.recordings]
-            # NB: don't error if we don't need trial episodes for coding.
-            episodes[annotation.Event.Trial] = synchronization.get_episode_frame_indices_from_ref(working_dir, annotation.Event.Trial, rec_def.name, study_config.sync_ref_recording, all_recs, study_config.sync_ref_do_time_stretch, study_config.sync_ref_average_recordings, study_config.sync_ref_stretch_which, missing_ref_coding_ok=has_auto_code)
+    if study_config.sync_ref_recording and rec_def.name != study_config.sync_ref_recording:
+        print("🔁 Getting synced trial episodes from reference recording")
+        all_recs = [r.name for r in study_config.session_def.recordings]
+        episodes[annotation.Event.Trial] = synchronization.get_episode_frame_indices_from_ref(
+            working_dir, annotation.Event.Trial, rec_def.name,
+            study_config.sync_ref_recording, all_recs,
+            study_config.sync_ref_do_time_stretch,
+            study_config.sync_ref_average_recordings,
+            study_config.sync_ref_stretch_which,
+            missing_ref_coding_ok=has_auto_code
+        )
 
-    sync_target_function         = _get_sync_function(study_config, rec_def, None if annotation.Event.Sync_ET_Data not in episodes else episodes[annotation.Event.Sync_ET_Data])
+    sync_target_function = _get_sync_function(study_config, rec_def, episodes.get(annotation.Event.Sync_ET_Data, None))
+    print("📦 Getting plane setup...")
     planes_setup, analyze_frames = _get_plane_setup(study_config, config_dir, episodes)
 
-    # set up pose estimator and run it
+    print(f"🧭 Planes to detect: {list(planes_setup.keys())}")
+    for p, setup in planes_setup.items():
+        print(f" - {p}: {len(analyze_frames[p]) if analyze_frames[p] else 'ALL'} frames")
+
     estimator = aruco.PoseEstimator(in_video, working_dir / gt_naming.frame_timestamps_fname, working_dir / gt_naming.scene_camera_calibration_fname)
+
     for p in planes_setup:
+        print(f"➕ Adding plane '{p}' to estimator")
         estimator.add_plane(p, planes_setup[p], analyze_frames[p])
-    for i in (markers:=marker.get_marker_dict_from_list(study_config.individual_markers)):
-        estimator.add_individual_marker(i, markers[i])
-    if markers and has_auto_code:
-        # if auto coding is set up, ensure individual markers are processed for all frames
+
+    individual_markers = marker.get_marker_dict_from_list(study_config.individual_markers)
+    for i in individual_markers:
+        print(f"➕ Adding individual marker {i} to estimator")
+        estimator.add_individual_marker(i, individual_markers[i])
+
+    if individual_markers and has_auto_code:
         estimator.proc_individual_markers_all_frames = True
-    if sync_target_function is not None:
+
+    if sync_target_function:
+        print("📌 Registering sync function")
         estimator.register_extra_processing_fun('sync', *sync_target_function)
+
     estimator.attach_gui(gui)
-    if gui is not None:
-        gui.set_show_timeline(True, timestamps.VideoTimestamps(working_dir / gt_naming.frame_timestamps_fname), annotation.flatten_annotation_dict(episodes), window_id=gui.main_window_id)
+    if gui:
+        print("🖼️ GUI setup")
+        gui.set_show_timeline(True, timestamps.VideoTimestamps(working_dir / gt_naming.frame_timestamps_fname),
+                              annotation.flatten_annotation_dict(episodes), window_id=gui.main_window_id)
         estimator.show_rejected_markers = visualization_show_rejected_markers
 
+    print("▶️ Start processing video...")
     poses, individual_markers, sync_target_signal = estimator.process_video()
+    print("✅ Finished processing video")
 
     for p in poses:
-        gt_plane.write_list_to_file(poses[p], working_dir/f'{naming.plane_pose_prefix}{p}.tsv', skip_failed=True)
-    for i in individual_markers:
-        gt_marker.write_list_to_file(individual_markers[i], working_dir/f'{naming.marker_pose_prefix}{i}.tsv', skip_failed=False)
-    if sync_target_signal:
-        df = pd.DataFrame(sync_target_signal['sync'],columns=['frame_idx','target_x','target_y'])
-        df.to_csv(working_dir/naming.target_sync_file, sep='\t', index=False, na_rep='nan', float_format="%.8f")
+        out_path = working_dir / f'{naming.plane_pose_prefix}{p}.tsv'
+        print(f"💾 Writing plane poses for '{p}' to {out_path}")
+        gt_plane.write_list_to_file(poses[p], out_path, skip_failed=True)
 
-    # update state
-    session.update_action_states(working_dir, process.Action.DETECT_MARKERS, process.State.Completed, study_config)
+    for i in individual_markers:
+        out_path = working_dir / f'{naming.marker_pose_prefix}{i}.tsv'
+        print(f"💾 Writing marker poses for ID {i} to {out_path}")
+        gt_marker.write_list_to_file(individual_markers[i], out_path, skip_failed=False)
+
+    if sync_target_signal:
+        df = pd.DataFrame(sync_target_signal['sync'], columns=['frame_idx', 'target_x', 'target_y'])
+        target_path = working_dir / naming.target_sync_file
+        print(f"💾 Writing sync target signal to {target_path}")
+        df.to_csv(target_path, sep='\t', index=False, na_rep='nan', float_format="%.8f")
+
+    # session.update_action_states(working_dir, process.Action.DETECT_MARKERS, process.State.Completed, study_config)
+    
+
+
+
+
+    print("✅ Updated session state to Completed")
+
+
 
 
 def _get_sync_function(study_config: config.Study,
