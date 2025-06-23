@@ -20,7 +20,7 @@ def wait_until_all_done(working_dir: pathlib.Path, action: Action, only_relevant
             state = session_info.state.get(action, State.Not_Run)
             if state != State.Completed:
                 all_done = False
-                print(f"  🔄 session: {state.displayable_name}")
+                print(f"  session: {state.displayable_name}")
         else:
             for rec_name, rec in session_info.recordings.items():
                 if only_relevant and study_cfg:
@@ -29,10 +29,10 @@ def wait_until_all_done(working_dir: pathlib.Path, action: Action, only_relevant
                 state = rec.state.get(action, State.Not_Run)
                 if state != State.Completed:
                     all_done = False
-                    print(f"  🔄 {rec_name}: {state.displayable_name}")
+                    print(f"   {rec_name}: {state.displayable_name}")
 
         if all_done:
-            print(f"✅ '{action.displayable_name}' voltooid voor {'relevante recordings' if only_relevant else 'alle recordings'}.")
+            print(f"{action.displayable_name}' voltooid voor {'relevante recordings' if only_relevant else 'alle recordings'}.")
             return
 
         time.sleep(interval)
@@ -51,7 +51,7 @@ def _run_actions_sequentially(actions: list[Action], working_dir: pathlib.Path, 
 
     for action in actions:
         if action.needs_GUI:
-            print(f"⚠️ {action.displayable_name} vereist GUI en wordt overgeslagen.")
+            print(f" {action.displayable_name} vereist GUI en wordt overgeslagen.")
             continue
 
         print(f"⚙️ Running: {action.displayable_name}")

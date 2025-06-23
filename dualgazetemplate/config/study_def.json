@@ -62,7 +62,7 @@
     }
   ],
   "get_cam_movement_for_et_sync_method": "plane",
-  "sync_ref_recording": "zoe",
+  "sync_ref_recording": "lead",
   "sync_ref_do_time_stretch": false,
   "auto_code_sync_points": {
     "markers": {
@@ -81,8 +81,8 @@
   },
   "video_make_which": {
     "builtin.set": [
-      "zoe",
-      "robert-jan"
+      "lead",
+      "follow"
     ]
   },
   "video_recording_colors": {
@@ -106,8 +106,8 @@
   },
   "video_show_camera_in_which": {
     "builtin.set": [
-      "zoe",
-      "robert-jan"
+      "lead",
+      "follow"
     ]
   },
   "video_which_gaze_type_on_plane": {

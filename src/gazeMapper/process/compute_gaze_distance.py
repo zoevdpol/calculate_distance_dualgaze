@@ -12,6 +12,15 @@ def run(working_dir: str | pathlib.Path, config_dir: str | pathlib.Path = None, 
     config_dir = pathlib.Path(config_dir)
     print(f"\n Start compute_gaze_distance for: {working_dir}")
 
+    ref_sync_path = working_dir / "ref_sync.tsv"
+    if not ref_sync_path.exists():
+        raise FileNotFoundError(f"ref_sync.tsv niet gevonden in: {working_dir}")
+
+    ref_sync_df = pd.read_csv(ref_sync_path, sep="\t")
+    mean_offset = ref_sync_df["mean_off"].iloc[0]
+    
+
+
     try:
         study_cfg = config.read_study_config_with_overrides(
             config_dir, {config.OverrideLevel.Session: working_dir}, **study_settings
@@ -28,7 +37,7 @@ def run(working_dir: str | pathlib.Path, config_dir: str | pathlib.Path = None, 
         if not trial_planes:
             raise ValueError("Geen plane gevonden in planes_per_episode voor 'Trial'")
         plane = list(trial_planes)[0]
-        print(f"✅ Using plane: {plane}")
+        print(f"Using plane: {plane}")
 
         path_a = working_dir / rec_a / f"{gm_naming.world_gaze_prefix}{plane}.tsv"
         path_b = working_dir / rec_b / f"{gm_naming.world_gaze_prefix}{plane}.tsv"
@@ -45,10 +54,10 @@ def run(working_dir: str | pathlib.Path, config_dir: str | pathlib.Path = None, 
         print(f"Rows in {rec_b}: {len(df_b)}")
 
         if "timestamp_VOR" not in df_b.columns or "timestamp_ref" not in df_b.columns:
-            raise ValueError("Robert-Jan data mist 'timestamp_VOR' of 'timestamp_ref'.")
+            raise ValueError("data mist 'timestamp_VOR' of 'timestamp_ref'.")
 
-        print("🛠️ Tijdcorrectie toegepast op robert-jan: +3.67 sec")
-        df_b["timestamp_VOR"] += 3.67
+        
+        df_b["timestamp_VOR"] += mean_offset
         df_b_sorted = df_b.sort_values("timestamp_ref").reset_index(drop=True)
         df_a_sorted = df_a.sort_values("timestamp_VOR").reset_index(drop=True)
 
@@ -77,7 +86,7 @@ def run(working_dir: str | pathlib.Path, config_dir: str | pathlib.Path = None, 
             merged["gazePosPlane2D_vidPos_homography_x_b"].notna() &
             merged["gazePosPlane2D_vidPos_homography_y_b"].notna()
         ]
-        print(f"✅ Valid gaze points: {len(valid)}")
+        #print(f"Valid gaze points: {len(valid)}")
 
         if len(valid) == 0:
             print("Geen geldige samengevoegde gaze data gevonden. Bestand wordt niet geschreven.")
@@ -96,8 +105,7 @@ def run(working_dir: str | pathlib.Path, config_dir: str | pathlib.Path = None, 
         else:
             valid["timestamp"] = merged["timestamp_VOR"]
 
-        print("\n🔍 Voorbeeld afstanden:")
-        print(valid[["timestamp", "gaze_distance_mm"]].head())
+    
 
         output_path = working_dir / f"{rec_a}_vs_{rec_b}_{plane}_merged_distance.tsv"
         valid.to_csv(output_path, sep="\t", index=False, float_format="%.8f")

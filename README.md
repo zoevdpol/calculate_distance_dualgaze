@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 [![Downloads](https://static.pepy.tech/badge/gazeMapper)](https://pepy.tech/project/gazeMapper)
 [![PyPI Latest Release](https://img.shields.io/pypi/v/gazeMapper.svg)](https://pypi.org/project/gazeMapper/)
 [![image](https://img.shields.io/pypi/pyversions/gazeMapper.svg)](https://pypi.org/project/gazeMapper/)
@@ -965,3 +966,7 @@ A data quality tool for eye tracking glasses. Behavior Research Methods. doi: 10
     doi = {10.3758/s13428-023-02105-5}
 }
 ```
+=======
+# gazeMapper_calculate_distance_dualgaze
+Deze repository bevat een aangepaste versie van gazeMapper, ontwikkeld voor het analyseren van dual gaze-data met de Tobii Pro Glasses 3.
+>>>>>>> 6c51b8eeb0d688beebf9c7854eb408bd1916ccaf

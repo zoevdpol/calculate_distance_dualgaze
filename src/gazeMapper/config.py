@@ -594,15 +594,15 @@ class Study:
         # Session recordings
         # ----------------------
         session_def.recordings = [
-            session.RecordingDefinition(name="zoe", type=session.RecordingType.Eye_Tracker),
-            session.RecordingDefinition(name="robert-jan", type=session.RecordingType.Eye_Tracker)
+            session.RecordingDefinition(name="lead", type=session.RecordingType.Eye_Tracker),
+            session.RecordingDefinition(name="follow", type=session.RecordingType.Eye_Tracker)
         ]
 
         # ----------------------
         # Study instellingen
         # ----------------------
         self.session_def = session_def
-        self.sync_ref_recording = "zoe"
+        self.sync_ref_recording = "lead"
         self.sync_ref_do_time_stretch = False
         self.get_cam_movement_for_et_sync_method = "plane"
         self.auto_code_sync_points = {"markers": {81}}
@@ -632,13 +632,13 @@ class Study:
 
 
         self.video_recording_colors = {
-            "zoe": RgbColor(r=0, g=95, b=0),
-            "robert-jan": RgbColor(r=255, g=127, b=0)
+            "lead": RgbColor(r=0, g=95, b=0),
+            "follow": RgbColor(r=255, g=127, b=0)
         }
-        self.video_make_which = {"zoe", "robert-jan"}
-        self.video_show_gaze_on_plane_in_which = {"zoe", "robert-jan"}
-        self.video_show_gaze_vec_in_which = {"zoe", "robert-jan"}
-        self.video_show_camera_in_which = {"zoe", "robert-jan"}
+        self.video_make_which = {"lead", "follow"}
+        self.video_show_gaze_on_plane_in_which = {"lead", "follow"}
+        self.video_show_gaze_vec_in_which = {"lead", "follow"}
+        self.video_show_camera_in_which = {"lead", "follow"}
         self.video_which_gaze_type_on_plane = gaze_worldref.Type.Average_Gaze_Vector
 
         # ----------------------

@@ -496,10 +496,10 @@ def do_the_work(working_dir: pathlib.Path, config_dir: pathlib.Path, gui: GUI, *
             if nearby_keys:
                 closest_key = min(nearby_keys, key=lambda x: abs(x - key))
                 distance_text = distances_by_time[closest_key]
-                print(f"✅ Match gevonden voor timestamp {key:.3f} ms → dichtstbijzijnde: {closest_key:.3f} ms → afstand: {distance_text}")
+                #print(f"Match gevonden voor timestamp {key:.3f} ms → dichtstbijzijnde: {closest_key:.3f} ms → afstand: {distance_text}")
             else:
                 distance_text = "– mm"
-                print(f"ℹ️ Geen afstand beschikbaar binnen ±{tolerance} ms voor timestamp {key:.3f} ms")
+                #print(f"ℹ️ Geen afstand beschikbaar binnen ±{tolerance} ms voor timestamp {key:.3f} ms")
 
 
             # 📐 Voeg distance rechtsboven toe
