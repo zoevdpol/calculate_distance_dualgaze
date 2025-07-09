@@ -46,4 +46,3 @@ if __name__ == "__main__":
         print(f"Fout tijdens uitvoeren van gazeMapper: {e}")
         sys.exit(1)
 
-print("Hello from Nuitka executable!")
