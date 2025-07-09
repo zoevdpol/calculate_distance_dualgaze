@@ -1,0 +1,11 @@
+[tool.bumpversion]
+current_version = "1.4.1"
+
+[[tool.bumpversion.files]]
+filename = "src/gazeMapper/version.py"
+
+
+[[tool.bumpversion.files]]
+filename = "README.md"
+search = "gazeMapper v{current_version}"
+replace = "gazeMapper v{new_version}"
