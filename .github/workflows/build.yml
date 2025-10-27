@@ -94,7 +94,7 @@ jobs:
           7z a -r ./${{ github.event.repository.name }}-${{ runner.os }}.zip ./src/dist/*
 
       - name: "Upload artifact to workflow run"
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: executable
           path: "./${{ github.event.repository.name }}-${{ runner.os }}.zip"
@@ -136,7 +136,7 @@ jobs:
         --outdir dist/
 
     - name: "Upload wheel as workflow artifact"
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v5
       with:
         name: wheel
         path: ./dist/*.whl
